@@ -1,0 +1,223 @@
+#!/usr/bin/env node
+
+var fs = require('fs')
+var home = require('expand-home-dir')
+var path = require('path')
+var unirest = require('unirest')
+var prompt = require('prompt')
+var colors = require('colors')
+
+var keylogger = require('../ext/keylogger.js')
+var screencapture = require('../ext/screencapture.js')
+
+var KeystrokeLogger = keylogger.KeystrokeLogger
+
+var confPath = home('~/.daic')
+var jar = unirest.jar()
+
+var conf
+try {
+  conf = require(confPath)
+} catch (err) {
+  conf = {
+    uri: 'http://localhost:7000'
+  }
+}
+
+function saveConf () {
+  return fs.writeFileSync(confPath, 'module.exports = ' +
+    JSON.stringify(conf, null, 4), 'utf-8')
+}
+
+function authenticate () {
+  prompt.message = prompt.delimiter = ''
+  prompt.start()
+  var prompts = {
+    username: 'Username for ' + conf.uri + ':',
+    password: 'Password for ' + conf.uri + ':',
+  }
+  prompt.get([{
+    name: prompts.username,
+    required: true
+  }, {
+    name: prompts.password,
+    hidden: true
+  }], function (err, result) {
+    unirest
+    .post(conf.uri + '/login')
+    .followRedirect(false)
+    .jar(jar)
+    .send({
+      username: result[prompts.username],
+      password: result[prompts.password] 
+    }).end(function (res) {
+      if (res.error) {
+        throw res.error
+      }
+      conf.auth = jar.getCookies(conf.uri).toString()
+      saveConf() 
+      main()
+    })
+  })
+}
+
+if (!conf.auth) {
+  return authenticate() 
+}
+
+function main () {
+  if (process.argv.length < 3) {
+    return help()
+  }
+
+  var command = process.argv[2]
+  
+  switch (command) {
+  case 'record': return record()
+  case 'adduser': return adduser()
+  default: help(new Error('unknown command \'' + command + '\'')) 
+  }
+}
+
+function help (err) {
+  if (err) console.log('error: ' + err.message)
+  console.log('usage: daic [record|adduser]')
+}
+
+function ensureAuth (next) {
+  unirest
+  .get(conf.uri + '/login')
+  .jar(jar)
+  .followRedirect(false)
+  .end(function (res) {
+    if (res.statusCode === 200) {
+      return authenticate()
+    } 
+    next()
+  })
+}
+
+function record () {
+  var keystrokeLogger = new KeystrokeLogger()
+  ensureAuth(function () {
+    var minutes = parseInt(process.argv[3] || 15, 10)
+    var interval = 1000 * minutes
+    var last = {
+      keystrokes: 0,
+      timestamp: new Date
+    }
+    var snapshotTimer
+    var snapshot = function (next) {
+      var keydelta = this.keystrokes - last.keystrokes
+      last.keystrokes = this.keystrokes
+      var timestamp = new Date()
+      var timedelta = timestamp - last.timestamp
+      last.timestamp = timestamp 
+      var image = screencapture.capture('jpg')
+      unirest
+      .post(conf.uri + '/api/v1/activities')
+      .jar(jar) 
+      .type('json')
+      .send({
+        keystrokes: keydelta,
+        timedelta: timedelta,
+        timestamp: timestamp,
+        image: image.toString('base64')
+      })
+      .end(function (res) {
+        if (res.statusCode === 401) {
+          this.close()        
+          return authenticate() 
+        }
+        if (res.error) {
+          throw res.error
+        }
+        if (next) {
+          return next()
+        }
+        snapshotTimer = setTimeout(snapshot, interval)
+      })
+    }.bind(keystrokeLogger)
+    snapshotTimer = setTimeout(snapshot, interval)
+    var recording = 0
+    var showTime = function (displayOnly) {
+      if (!displayOnly) recording++
+      var seconds = recording
+      var minutes = Math.floor(seconds / 60)
+      var hours = Math.floor(minutes / 60)
+      seconds = ('00' + (seconds % 60)).substr(-2)
+      minutes = ('00' + (minutes % 60 )).substr(-2)
+      process.stdout.cursorTo(0)
+      process.stdout.clearLine()
+      process.stdout.write(colors.red('recording [' +
+        hours + ':' + minutes + ':' + seconds + ']'))
+    }
+    var showTimeInterval = setInterval(showTime, 1000)
+    var paused = false
+    var elapsed = 0
+    process.stdin.setRawMode(true)
+    process.stdin.setEncoding('utf8')
+    process.stdin.on('data', function (key) {
+      if (key.charCodeAt(0) === 112) { // p
+        if (!paused) {
+          paused = true
+          clearInterval(showTimeInterval) 
+          clearTimeout(snapshotTimer)
+          elapsed = (recording * 1000) % interval
+          process.stdout.write(colors.grey(' (paused)'))
+        } else {
+          showTime(true)
+          showTimeInterval = setInterval(showTime, 1000)
+          snapshotTimer = setTimeout(snapshot, interval - elapsed)
+          last.timestamp = new Date() - elapsed
+          elapsed = 0
+          paused = false
+        }
+      } else if (key.charCodeAt(0) === 113) { // q
+        process.stdout.cursorTo(0)
+        process.stdout.clearLine()
+        keystrokeLogger.close()
+        process.exit(0)
+      }
+    }) 
+  })   
+}
+
+function adduser () {
+  ensureAuth(function () {
+    var prompts = {
+      username: 'New username for ' + conf.uri + ':',
+      password: 'Password for new user on ' + conf.uri + ':',
+    }
+    prompt.get([{
+      name: prompts.username,
+      required: true
+    }, {
+      name: prompts.password,
+      hidden: true
+    }], function (err, result) {
+      unirest
+      .post(conf.uri + '/api/v1/users')
+      .jar(jar) 
+      .type('json')
+      .send({
+        username: result[prompts.username],
+        password: result[prompts.password]
+      })
+      .end(function (res) {
+        if (res.statusCode === 401) {
+          this.close()        
+          return authenticate() 
+        }
+        if (res.error) {
+          throw res.error
+        }
+      }.bind(this))   
+    })
+  })
+}
+
+try {
+  jar.add(conf.auth, conf.uri)
+  main()
+} catch (err) {}

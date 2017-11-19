@@ -1,0 +1,31 @@
+{
+  "name": "daic-cli",
+  "version": "0.0.1",
+  "description": "A daic command line client",
+  "main": "bin/daic",
+  "scripts": {
+    "postinstall": "sh scripts/postinstall.sh",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/aynik/daic-cli.git"
+  },
+  "keywords": [
+    "daic",
+    "command-line",
+    "client"
+  ],
+  "dependencies": {
+    "colors": "^1.1.2",
+    "expand-home-dir": "0.0.2",
+    "prompt": "^0.2.14",
+    "unirest": "^0.4.2"
+  },
+  "author": "aynik",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/aynik/daic-cli/issues"
+  },
+  "homepage": "https://github.com/aynik/daic-cli#readme"
+}
